@@ -2,6 +2,7 @@ var assert = require("assert")
 var EventEmitter = require("events").EventEmitter
 var inherits = require('util').inherits
 var http = require('http')
+var https = require('https')
 var Stream = require('stream')
 
 var noop = function () {}
@@ -10,6 +11,29 @@ var Pinger = require('../lib/pinger')(inherits, EventEmitter)
 var Endpoint = require("../lib/endpoint")(inherits, EventEmitter, Pinger)
 
 describe("Endpoint", function () {
+
+	it("passes nothing to the Agent constructor when no agentOptions are given", function () {
+		var e = new Endpoint(http, '127.0.0.1', 6969, { bogus: true })
+		assert.equal(e.agent.options.bogus, undefined)
+	})
+
+	it("passes agentOptions to the underlying Agent (no keep-alive)", function () {
+		var e = new Endpoint(http, '127.0.0.1', 6969, { agentOptions: { cert: 'foo', key: 'bar'}})
+		assert.equal(e.agent.options.cert, 'foo')
+		assert.equal(e.agent.options.key, 'bar')
+	})
+
+	it("passes agentOptions to the underlying Agent (keep-alive)", function () {
+		var e = new Endpoint(http, '127.0.0.1', 6969, {keepAlive: true, agentOptions: { cert: 'foo', key: 'bar'}})
+		assert.equal(e.agent.options.cert, 'foo')
+		assert.equal(e.agent.options.key, 'bar')
+	})
+
+	it("passes agentOptions to the underlying Agent (keep-alive secure)", function () {
+		var e = new Endpoint(https, '127.0.0.1', 6969, {keepAlive: true, agentOptions: { cert: 'foo', key: 'bar'}})
+		assert.equal(e.agent.options.cert, 'foo')
+		assert.equal(e.agent.options.key, 'bar')
+	})
 
 	//
 	// unhealthy
@@ -176,7 +200,33 @@ describe("Endpoint", function () {
 					s.close()
 					assert.equal(fin, true)
 					done()
-				}, 50)
+				}, 60)
+			})
+			s.listen(6969)
+		})
+
+		it("removes the request from this.requests on timeout", function (done) {
+			var s = http.createServer(function (req, res) {
+				setTimeout(function () {
+					res.end("foo")
+				}, 30)
+			})
+			s.on('listening', function () {
+				var e = new Endpoint(http, '127.0.0.1', 6969, {keepAlive: true, timeout: 20, resolution: 10})
+				var fin = false
+				e.on('timeout', function () {
+					fin = true
+				})
+				e.request({path:'/foo', method: 'GET'}, noop)
+				e.request({path:'/foo', method: 'GET'}, noop)
+				e.request({path:'/foo', method: 'GET'}, noop)
+
+				setTimeout(function () {
+					assert.equal(fin, true)
+					assert.equal(Object.keys(e.requests).length, 0)
+					s.close()
+					done()
+				}, 100)
 			})
 			s.listen(6969)
 		})
@@ -335,7 +385,8 @@ describe("Endpoint", function () {
 		it("maintains the correct pending count when requestCount 'overflows'", function () {
 			var e = new Endpoint(http, '127.0.0.1', 6969)
 			e.successes = (Math.pow(2, 52) / 2) - 250
-			e.failures = (Math.pow(2, 52) / 2) - 250
+			e.failures = (Math.pow(2, 52) / 2) - 251
+			e.filtered = 1
 			e.requestCount = Math.pow(2, 52)
 			e.setPending()
 			assert.equal(e.pending, 500)
@@ -351,6 +402,85 @@ describe("Endpoint", function () {
 			e.resetCounters()
 			assert.equal(e.requestCount - e.requestsLastCheck, e.requestRate)
 		})
+	})
+
+	//
+	// resetCounters
+	//
+	//////////////////////////////////////////////////////////////////////////////
+
+	describe("resetCounters()", function () {
+
+		it("sets successes, failures and filtered to 0", function () {
+			var e = new Endpoint(http, '127.0.0.1', 6969)
+			e.successes = (Math.pow(2, 52) / 2) - 250
+			e.failures = (Math.pow(2, 52) / 2) - 251
+			e.filtered = 1
+			e.requestCount = Math.pow(2, 52)
+			e.resetCounters()
+			assert.equal(e.successes, 0)
+			assert.equal(e.failures, 0)
+			assert.equal(e.filtered, 0)
+		})
+
+		it("sets requestCount = pending", function () {
+			var e = new Endpoint(http, '127.0.0.1', 6969)
+			e.pending = 500
+			e.requestRate = 400
+			e.requestCount = Math.pow(2, 52)
+			e.resetCounters()
+			assert.equal(e.requestCount, 500)
+		})
+
+		it("sets requestsLastCheck = requestRate - pending", function () {
+			var e = new Endpoint(http, '127.0.0.1', 6969)
+			e.pending = 500
+			e.requestRate = 600
+			e.resetCounters()
+			assert.equal(e.requestsLastCheck, 100)
+		})
+	})
+
+	//
+	// ready
+	//
+	//////////////////////////////////////////////////////////////////////////////
+
+	describe("ready()", function () {
+
+		it('returns true when it is healthy and connected > pending with keepAlive on',
+			function () {
+				var e = new Endpoint(http, '127.0.0.1', 6969, {keepAlive: true})
+				e.pending = 1
+				e.agent.sockets[e.name] = [1,2]
+				assert(e.ready())
+			}
+		)
+
+		it('returns false when it is healthy and connected = pending with keepAlive on',
+			function () {
+				var e = new Endpoint(http, '127.0.0.1', 6969, {keepAlive: true})
+				e.pending = 1
+				e.agent.sockets[e.name] = [1]
+				assert(!e.ready())
+			}
+		)
+
+		it('returns true when it is healthy and pending = 0 with keepAlive off',
+			function () {
+				var e = new Endpoint(http, '127.0.0.1', 6969)
+				e.pending = 0
+				assert(e.ready())
+			}
+		)
+
+		it('returns false when it is healthy and pending > 0 with keepAlive off',
+			function () {
+				var e = new Endpoint(http, '127.0.0.1', 6969)
+				e.pending = 1
+				assert(!e.ready())
+			}
+		)
 	})
 
 	//
