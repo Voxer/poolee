@@ -11,7 +11,7 @@
     },
     "engines" : { "node": ">=0.6.0" },
     "dependencies": {
-      "keep-alive-agent": "git://github.com/Voxer/keep-alive-agent.git"
+      "keep-alive-agent": "git://github.com/Voxer/keep-alive-agent.git#v0.0.1"
     },
     "devDependencies": {
       "mocha": "*"
